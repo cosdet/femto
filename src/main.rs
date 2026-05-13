@@ -266,6 +266,7 @@ fn main() {
         return println!("Error: too many arguments.\nusage: femto [FILE]");
     }
 
+    println!("Femto: Time to get stdout() in raw mode!");
     let mut stdout = stdout().into_raw_mode().expect("Unsupported terminal.");
 	write!(stdout, "{}", ToAlternateScreen).unwrap();
 
