@@ -6,6 +6,9 @@ edition = "2018"
 
 [dependencies]
 termion = "^1.5.0"
+twizzler-abi = { path = "../../lib/twizzler-abi" }
+twizzler-rt-abi = "0.99"
+libc = { workspace = true }
 
 # [profile.release]
 # lto = true

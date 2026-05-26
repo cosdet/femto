@@ -5,6 +5,24 @@ use std::path::PathBuf;
 use termion::style::{Invert, Reset};
 use termion::{cursor::Goto, event::Key, input::TermRead, raw::IntoRawMode, screen::ToAlternateScreen};
 
+// Twizzler Runtime Window Change Signal Handling
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::ffi::c_void;
+use twizzler_abi::upcall::UpcallData;
+use twizzler_rt_abi::bindings::twz_rt_set_upcall_handler;
+
+static SIGWINCH_RECEIVED: AtomicBool = AtomicBool::new(false);
+
+unsafe extern "C-unwind" fn upcall_handler(_frame: *mut c_void, data: *const c_void) {
+    if let Some(data) = unsafe { data.cast::<UpcallData>().as_ref() } {
+        if let twizzler_abi::upcall::UpcallInfo::Mailbox(val) = data.info {
+            if val == libc::SIGWINCH as u64 {
+                SIGWINCH_RECEIVED.store(true, Ordering::SeqCst);
+            }
+        }
+    }
+}
+
 fn to_str(s: &Vec<char>) -> String {
     s.iter().collect()
 }
@@ -203,7 +221,9 @@ impl Buffer for FileBuffer {
     }
 
     fn move_caret(&mut self, row: i32, col: i32) {
-        let (w, h) = termion::terminal_size().expect("Unsupported terminal.");
+        let (mut w, mut h) = termion::terminal_size().expect("Unsupported terminal.");
+        if w == 0 { w = 80; } // Default terminal size to prevent overflow (80x24)
+        if h == 0 { h = 24; }
 
         let num_lines = self.lines.len() as i32;
         self.row = min(max(self.row as i32 + row, 0), num_lines - 1) as usize;
@@ -257,6 +277,8 @@ impl Buffer for LineBuffer {
 }
 
 fn main() {
+    unsafe { twz_rt_set_upcall_handler(Some(upcall_handler)) };
+
     let mut editor = Editor::new();
 
     let mut args: Vec<String> = std::env::args().collect();
@@ -266,11 +288,13 @@ fn main() {
         return println!("Error: too many arguments.\nusage: femto [FILE]");
     }
 
-    println!("Femto: Time to get stdout() in raw mode!");
     let mut stdout = stdout().into_raw_mode().expect("Unsupported terminal.");
 	write!(stdout, "{}", ToAlternateScreen).unwrap();
 
     loop {
+        if SIGWINCH_RECEIVED.swap(false, Ordering::SeqCst) {
+            // Signal was caught, terminal size changed!
+        }
         print_screen(&mut stdout, &mut editor);
         if handle_keys(&mut editor) {
             break;
@@ -285,7 +309,9 @@ fn print_screen(stdout: &mut Stdout, editor: &mut Editor) {
     let file_buf = &editor.file_buffer;
     let (roff, coff) = (file_buf.row_offset, file_buf.col_offset);
     let (r, c) = (file_buf.row + 1, file_buf.col + 1);
-    let (w, h) = termion::terminal_size().expect("Unsupported terminal.");
+    let (mut w, mut h) = termion::terminal_size().expect("Unsupported terminal.");
+    if w == 0 { w = 80; } // Default terminal size to prevent overflow (80x24)
+    if h == 0 { h = 24; }
 
     // Clear and start writing from origin
     write!(stdout, "{}{}", termion::clear::All, Goto(1, 1)).unwrap();
@@ -338,11 +364,14 @@ fn print_screen(stdout: &mut Stdout, editor: &mut Editor) {
 }
 
 fn handle_keys(editor: &mut Editor) -> bool {
-    let c = stdin().keys().next().unwrap();
-    match c.unwrap() {
+    let c = match stdin().keys().next() {
+        Some(Ok(key)) => key,
+        _ => return false, // Ignore interrupted reads or EOF
+    };
+    match c {
         Key::Char('\t') => for _ in 0..4 { editor.push(' ') },
         Key::Char(c) => editor.push(c),
-        Key::Ctrl('q') => return true,
+        Key::Ctrl('x') => return true,
         Key::Ctrl('o') => editor.start_open(),
         Key::Ctrl('s') => editor.start_save(),
         Key::Backspace => editor.buffer().backspace(),
